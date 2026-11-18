@@ -1,0 +1,10 @@
+# Python 3.15 (latest stable: 3.15.2). Also see ../.python-version.
+# Install:  pip install -r requirements.txt
+flask==3.0.3
+flask-cors==4.0.1
+earthengine-api>=0.1.400
+PyJWT>=2.8.0
+python-dotenv>=1.0.1
+gunicorn>=22.0.0
+# Optional, only if you set USE_NGROK=true in .env:
+# pyngrok
