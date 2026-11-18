@@ -455,7 +455,7 @@ def _trend_image(year, season):
     col = ee.ImageCollection(imgs)
     sen = col.reduce(ee.Reducer.sensSlope())
     mk = col.reduce(ee.Reducer.kendallsCorrelation())
-    return sen.select("slope").updateMask(mk.select("p-value").lt(0.05)).rename("NDVI_trend")
+    return sen.select("slope").updateMask(mk.select("NDVI_p-value").lt(0.05)).rename("NDVI_trend")
 
 
 def _rr(img, reducer, geom, scale):
