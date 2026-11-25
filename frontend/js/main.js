@@ -1,12 +1,28 @@
 // Entry point: calls the backend and fills the map, KPI cards, charts and side panels.
-import { initMap, setTiles, setOpacity, setBoundary, fitHome, toggleBasemap, renderLegend } from "./map.js";
+import { initMap, setTiles, setOpacity, setBoundary, fitHome, toggleBasemap, renderLegend, getViewBounds } from "./map.js";
+import { loadPanel, hidePanel } from "./analytics.js";
 import { initCharts, sparkline, renderSeasonal, renderVci, renderRain, renderDonut, renderRanking, renderGauge, RISK_COLOR } from "./charts.js";
 import { initFilters, setDistricts, selectDistrict, getFilters, buildLayerPanel, setActiveLayer } from "./filters.js";
 
+const VEG_LAYER = { s2_ndvi: "s2_ndvi", modis_ndvi: "modis_ndvi", ls_ndvi: "ls_ndvi" };
+
 const API_BASE = (window.AGROWATCH_API_BASE ?? "").replace(/\/$/, "");
-const VIEW_LAYER = { overview: "stress", vegetation: "s2_ndvi", rainfall: "rain_pct", drought: "adsi" };
+// view -> map layer (null keeps the current layer) and the analysis panel it opens
+const VIEWS = {
+  overview: { layer: "stress" },
+  vegetation: { layer: () => VEG_LAYER[getFilters().vegsrc] || "s2_ndvi" },
+  phenology: { layer: "pheno_pos", panel: "phenology" },
+  drought: { layer: "vhi_class", panel: "drought" },
+  rainfall: { layer: "spi3", panel: "rain" },
+  soil: { layer: "sm_stress", panel: "soil" },
+  et: { layer: "et_veg", panel: "et" },
+  classify: { layer: null, panel: "classify" },
+  asi: { layer: "asi_class", panel: "asi" },
+  districts: { layer: "stress", panel: "districts" },
+  actions: { layer: "asi_class", panel: "actions" },
+};
 let token = localStorage.getItem("agrowatch_token") || "";
-const state = { meta: null, layer: "stress", stats: null, run: 0, tileRun: 0 };
+const state = { meta: null, layer: "stress", view: "overview", stats: null, run: 0, tileRun: 0 };
 
 const $ = (s) => document.querySelector(s);
 const fmtInt = (n) => (n == null || isNaN(n) ? "--" : Math.round(n).toLocaleString("en-US"));
@@ -46,7 +62,8 @@ function login() {
 }
 
 const query = (f, extra = {}) => ({
-  province: f.province, district: f.district, year: f.year, season: f.season, crop: f.crop ? 1 : 0, ...extra,
+  province: f.province, district: f.district, year: f.year, season: f.season, crop: f.crop ? 1 : 0,
+  alpha: f.alpha, w: f.w, pca: f.pca || "", ...extra,
 });
 
 let toastTimer;
@@ -210,10 +227,12 @@ async function refreshAll() {
   const run = ++state.run;
   const stale = () => run !== state.run;
   const f = getFilters();
+  if (f.bboxInvalid) { toast("Custom region must be four numbers: west,south,east,north (or leave it empty)."); return; }
   $("#apply").disabled = true;
+  updateRegionLine(f);
   resetPanels();
 
-  const stats = guarded("Statistics", stale, () => api("/api/stats", query(f))).then((s) => { if (s) renderStats(s); return s; });
+  const stats = guarded("Statistics", stale, () => api("/api/stats", query(f))).then((s) => { if (s) { renderStats(s); showSeasonInfo(s.season_info); } return s; });
   const series = guarded("Trend charts", stale, () => api("/api/series", query(f))).then((s) => { if (s) renderSeries(s); return s; });
   const rain = guarded("Rainfall chart", stale, () => api("/api/rainfall", query(f))).then((r) => { if (r) renderRain("chart-rain", r.rows); });
   const ranking = guarded("District ranking", stale, () => api("/api/ranking", query(f))).then((r) => { if (r) renderRanking("chart-rank", r.rows); });
@@ -221,7 +240,10 @@ async function refreshAll() {
     guarded("Insights", stale, () => api("/api/insights", query(f))).then((i) => { if (i) renderInsights(i); }) : null);
 
   await Promise.allSettled([loadBoundary(f, stale), loadTiles(f), stats, series, rain, ranking, insights]);
-  if (!stale()) $("#apply").disabled = false;
+  if (!stale()) {
+    $("#apply").disabled = false;
+    if (VIEWS[state.view].panel) loadPanel(VIEWS[state.view].panel, panelCtx).catch((e) => toast(e.message));
+  }
 }
 
 async function loadSources() {
@@ -256,14 +278,113 @@ async function loadDistricts(selected) {
   setDistricts(districts, selected);
 }
 
+// -------------------------------------------- header, banner, dialogs, export
+function updateRegionLine(f) {
+  const where = f.district.startsWith("bbox:") ? `Custom region (${f.district.slice(5)})` : [f.province || "Pakistan", f.districtName || "all districts"].join(" / ");
+  $("#region-line").textContent = `${where}  |  analysis date ${state.meta?.analysis_date ?? ""}`;
+}
+
+function showSeasonInfo(info) {
+  const b = $("#season-banner");
+  if (!info) { b.classList.add("hidden"); return; }
+  const when = `${info.start} to ${info.end}`;
+  if (info.partial) {
+    b.textContent = `${info.label} ${$("#year").value} is still running. Results cover ${when} (data to date), and every baseline year uses the same shortened window, so this is a partial-season comparison, not a full-season result.`;
+    b.classList.remove("hidden");
+  } else b.classList.add("hidden");
+}
+
+async function openMethodology() {
+  const dlg = $("#method-dialog"), body = $("#method-body");
+  dlg.showModal();
+  if (body.dataset.loaded) return;
+  try {
+    const m = await api("/api/methodology");
+    const node = (tag, text, cls) => { const n = document.createElement(tag); if (cls) n.className = cls; n.textContent = text; return n; };
+    const frag = document.createDocumentFragment();
+    frag.append(node("h4", "Data types"));
+    const dl = document.createElement("dl");
+    for (const [k, v] of Object.entries(m.categories)) dl.append(node("dt", k), node("dd", v));
+    frag.append(dl, node("h4", "Principles"));
+    const ul = document.createElement("ul");
+    m.principles.forEach((p) => ul.append(node("li", p)));
+    frag.append(ul, node("h4", "What is implemented where"));
+    const il = document.createElement("dl");
+    m.implementation.forEach(([k, v]) => il.append(node("dt", k), node("dd", v)));
+    frag.append(il, node("h4", "Indicators"));
+    for (const i of m.indicators) {
+      const d = document.createElement("details");
+      d.append(node("summary", `${i.name}  (${i.category})`));
+      const t = document.createElement("dl");
+      [["Formula", i.formula], ["Dataset", i.dataset], ["Resolution", i.resolution], ["Temporal", i.temporal], ["Reference period", i.reference],
+        ["Quality filtering", i.quality], ["Processing", i.method], ["Limitations", i.limitations]].forEach(([k, v]) => t.append(node("dt", k), node("dd", v)));
+      d.append(t);
+      frag.append(d);
+    }
+    body.replaceChildren(frag);
+    body.dataset.loaded = "1";
+  } catch (e) { body.textContent = `Could not load the methodology: ${e.message}`; }
+}
+
+function openExport() {
+  const sel = $("#ex-layer");
+  sel.replaceChildren(...Object.entries(state.meta.layers).map(([k, v]) => new Option(`${v.group}: ${v.label}`, k)));
+  sel.value = state.layer in state.meta.layers ? state.layer : "asi";
+  $("#export-note").textContent = state.meta.exports_enabled
+    ? "Starts an Earth Engine export task. Watch it in the Earth Engine Tasks tab."
+    : "Exports are switched off on this server (set EXPORTS_ENABLED=true in backend/.env to allow them).";
+  $("#ex-result").textContent = "";
+  $("#export-dialog").showModal();
+}
+
+async function runExport(kind) {
+  const f = getFilters(), out = $("#ex-result");
+  const body = { kind, layer: $("#ex-layer").value, province: f.province, district: f.district, year: f.year, season: f.season,
+    crop: f.crop ? 1 : 0, alpha: f.alpha, w: f.w, pca: f.pca || "", scale: Number($("#ex-scale").value) || null,
+    crs: $("#ex-crs").value.trim(), folder: $("#ex-folder").value.trim(), description: $("#ex-desc").value.trim() || null };
+  if ($("#ex-region").value === "bbox") {
+    const box = $("#bbox").value.split(",").map(Number);
+    if (box.length !== 4 || box.some((x) => !Number.isFinite(x))) { out.textContent = "Fill the custom region box first."; return; }
+    body.region = box;
+  }
+  out.textContent = "Starting export...";
+  try {
+    const res = await fetch(`${API_BASE}/api/export`, { method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    const adj = data.scale_adjusted ? ` The resolution was raised to the native ${data.native_scale} m.` : "";
+    out.textContent = `Task ${data.task} started (${data.description}) to ${data.destination}.${adj}`;
+  } catch (e) { out.textContent = `Export failed: ${e.message}`; }
+}
+
 // ----------------------------------------------------------------- init
 function pickLayer(key) {
   state.layer = key;
   setActiveLayer(key);
-  // keep the top nav in step: highlight a view only while its layer is the one on the map
-  document.querySelectorAll(".nav-btn[data-view]").forEach((b) => b.classList.toggle("active", VIEW_LAYER[b.dataset.view] === key));
   renderClasses();
   loadTiles(getFilters());
+}
+
+const panelCtx = {
+  get f() { return getFilters(); },
+  get meta() { return state.meta; },
+  api,
+  q: (extra) => query(getFilters(), extra),
+  onPickDistrict: (name) => onPickDistrict(name),
+  reloadView: () => { pickLayer(state.layer); openView(state.view, false); },
+  showTiles: (t) => { setTiles(t.url); renderLegend($("#legend"), t); },
+};
+
+function openView(view, changeLayer = true) {
+  const v = VIEWS[view];
+  state.view = view;
+  document.querySelectorAll(".nav-btn[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  if (changeLayer && v.layer) pickLayer(typeof v.layer === "function" ? v.layer() : v.layer);
+  if (v.panel) {
+    loadPanel(v.panel, panelCtx).catch((e) => toast(e.message));
+    $("#intel-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  } else hidePanel();
 }
 
 function onPickDistrict(name) {
@@ -273,7 +394,14 @@ function onPickDistrict(name) {
 async function init() {
   initCharts();
   initMap(onPickDistrict);
-  document.querySelectorAll(".nav-btn[data-view]").forEach((b) => b.addEventListener("click", () => pickLayer(VIEW_LAYER[b.dataset.view])));
+  document.querySelectorAll(".nav-btn[data-view]").forEach((b) => b.addEventListener("click", () => openView(b.dataset.view)));
+  $("#bbox-map").addEventListener("click", () => { $("#bbox").value = getViewBounds().join(","); });
+  $("#open-method").addEventListener("click", openMethodology);
+  $("#method-close").addEventListener("click", () => $("#method-dialog").close());
+  $("#open-export").addEventListener("click", openExport);
+  $("#ex-close").addEventListener("click", () => $("#export-dialog").close());
+  $("#ex-image").addEventListener("click", () => runExport("image"));
+  $("#ex-table").addEventListener("click", () => runExport("table"));
   $("#open-hub").addEventListener("click", () => $("#hub-dialog").showModal());
   $("#hub-close").addEventListener("click", () => $("#hub-dialog").close());
   $("#home-btn").addEventListener("click", fitHome);
@@ -286,7 +414,7 @@ async function init() {
       onApply: refreshAll,
       onProvince: () => loadDistricts().catch((e) => toast(e.message)),
     });
-    buildLayerPanel(state.meta.layers, state.layer, pickLayer);
+    buildLayerPanel(state.meta.layers, state.meta.layer_groups, state.layer, pickLayer);
     await loadDistricts();
     loadSources();
     await refreshAll();

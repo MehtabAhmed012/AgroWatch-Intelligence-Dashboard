@@ -5,6 +5,10 @@ function fill(select, items) {
   select.replaceChildren(...items.map(([label, value]) => new Option(label, value)));
 }
 
+// ASI weight state is shared by the map (tiles) and the Agricultural Stress panel.
+export const asi = { keys: [], weights: [], pca: false, custom: false };
+export function setAsiWeights(w, pca) { asi.weights = w; asi.pca = !!pca; asi.custom = true; }
+
 export function initFilters(meta, handlers) {
   const hasProvince = meta.provinces.length > 0;
   $("province-field").hidden = !hasProvince;
@@ -15,9 +19,12 @@ export function initFilters(meta, handlers) {
   }
   fill($("year"), meta.years.slice().reverse().map((y) => [String(y), String(y)]));
   $("year").value = String(meta.default_year);
+  asi.keys = meta.asi.keys;
+  asi.weights = meta.asi.keys.map((k) => meta.asi.weights[k]);
 
   const seg = $("season-seg");
-  seg.replaceChildren(...meta.seasons.map((s, i) => {
+  const seasons = [...meta.seasons, { id: "custom", label: "Custom window" }];
+  seg.replaceChildren(...seasons.map((s, i) => {
     const b = document.createElement("button");
     b.type = "button";
     b.dataset.season = s.id;
@@ -26,10 +33,11 @@ export function initFilters(meta, handlers) {
     if (i === 0) b.classList.add("on");
     b.addEventListener("click", () => {
       seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+      $("custom-dates").classList.toggle("hidden", s.id !== "custom");
     });
     return b;
   }));
-
+  $("alpha").addEventListener("input", (e) => { $("alpha-val").textContent = Number(e.target.value).toFixed(2); });
   $("apply").addEventListener("click", handlers.onApply);
 }
 
@@ -40,39 +48,53 @@ export function setDistricts(list, selected) {
 
 export function selectDistrict(name) {
   const sel = $("district");
-  if ([...sel.options].some((o) => o.value === name)) { sel.value = name; return true; }
+  if ([...sel.options].some((o) => o.value === name)) { sel.value = name; $("bbox").value = ""; return true; }
   return false;
+}
+
+// "2001-05-01" -> "0501"
+const md = (iso) => iso.slice(5, 7) + iso.slice(8, 10);
+
+export function parseBbox(text) {
+  const parts = text.split(",").map((x) => Number(x.trim()));
+  return parts.length === 4 && parts.every((x) => Number.isFinite(x)) ? parts : null;
 }
 
 export function getFilters() {
   const on = document.querySelector("#season-seg button.on");
+  let season = on ? on.dataset.season : "kharif";
+  if (season === "custom") {
+    const a = $("cs-start").value, b = $("cs-end").value;
+    season = a && b ? `c${md(a)}_${md(b)}` : "kharif";
+  }
+  const box = $("bbox").value.trim();
+  const bbox = box ? parseBbox(box) : null;
+  const w = asi.custom ? asi.weights.join(",") : "";
   return {
     province: $("province-field").hidden ? "" : $("province").value,
-    district: $("district").value,
+    district: bbox ? `bbox:${bbox.join(",")}` : $("district").value,
+    districtName: $("district").value,
+    bboxInvalid: !!box && !bbox,
     year: $("year").value,
-    season: on ? on.dataset.season : "kharif",
+    season,
     crop: $("crop").checked,
+    alpha: $("alpha").value,
+    vegsrc: $("vegsrc").value,
+    w, pca: asi.pca ? 1 : 0,
   };
 }
 
-// Left-hand layer panel. Layer keys come from the backend (`LAYERS` in gee_processor.py);
-// any key not listed here still appears, under "Other".
-const LAYER_GROUPS = [
-  ["Drought severity", ["stress", "adsi", "vci_stress"]],
-  ["Vegetation", ["s2_ndvi", "s2_evi", "s2_ndre", "modis_ndvi", "anomaly", "vci", "lai", "gpp", "trend"]],
-  ["Rainfall", ["rain", "rain_pct", "spi"]],
-  ["Heat and soil water", ["lst", "tci", "vhi", "smci", "esi_anom"]],
-];
-
-export function buildLayerPanel(layers, active, onPick) {
+// Left-hand layer panel. Groups and layer metadata come from /api/meta.
+export function buildLayerPanel(layers, groupOrder, active, onPick) {
   const wrap = $("layer-list");
-  const groups = LAYER_GROUPS.map(([name, keys]) => [name, keys.filter((k) => layers[k])]);
-  const used = new Set(groups.flatMap(([, keys]) => keys));
-  const rest = Object.keys(layers).filter((k) => !used.has(k));
-  if (rest.length) groups.push(["Other", rest]);
-
+  const byGroup = new Map(groupOrder.map((g) => [g, []]));
+  for (const [key, meta] of Object.entries(layers)) {
+    const g = meta.group || "Other";
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push(key);
+  }
   const nodes = [];
-  for (const [name, keys] of groups) {
+  for (const [name, keys] of byGroup) {
     if (!keys.length) continue;
     const h = document.createElement("div");
     h.className = "layer-group";

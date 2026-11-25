@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AgroWatch - Agriculture and drought monitoring</title>
+  <title>AgroWatch Intelligence - From satellite observations to agricultural decision intelligence</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -16,16 +16,27 @@
     <div class="brand">
       <svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true"><path d="M16 27V12M16 19c-5.5 0-9-3.5-9-9 5.5 0 9 3.5 9 9zm0 2.5c5.5 0 9-3.5 9-9-5.5 0-9 3.5-9 9z" fill="none" stroke="#34d399" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <div>
-        <div class="brand-name">AgroWatch Pakistan</div>
-        <div class="brand-sub">Agriculture and drought intelligence</div>
+        <div class="brand-name">AgroWatch Intelligence</div>
+        <div class="brand-sub">From satellite observations to agricultural decision intelligence</div>
+        <div class="region-line" id="region-line" aria-live="polite"></div>
+      
       </div>
     </div>
     <nav class="nav" id="nav" aria-label="Views">
       <button class="nav-btn active" data-view="overview">Overview</button>
-      <button class="nav-btn" data-view="vegetation">Vegetation</button>
-      <button class="nav-btn" data-view="rainfall">Rainfall</button>
-      <button class="nav-btn" data-view="drought">Drought</button>
-      <button class="nav-btn" id="open-hub">Data hub</button>
+      <button class="nav-btn" data-view="vegetation">Crop Vegetation</button>
+      <button class="nav-btn" data-view="phenology">Crop Phenology</button>
+      <button class="nav-btn" data-view="drought">Drought Intelligence</button>
+      <button class="nav-btn" data-view="rainfall">Rainfall Monitoring</button>
+      <button class="nav-btn" data-view="soil">Soil Moisture</button>
+      <button class="nav-btn" data-view="et">Evapotranspiration</button>
+      <button class="nav-btn" data-view="classify">Crop Classification</button>
+      <button class="nav-btn" data-view="asi">Agricultural Stress</button>
+      <button class="nav-btn" data-view="districts">District Analytics</button>
+      <button class="nav-btn" data-view="actions">Recommendations</button>
+      <button class="nav-btn ghost" id="open-hub">Data hub</button>
+      <button class="nav-btn ghost" id="open-method">Methodology</button>
+      <button class="nav-btn ghost" id="open-export">Export</button>
     </nav>
   </header>
 
@@ -50,6 +61,22 @@
       <label for="crop">Mask</label>
       <label class="switch"><input type="checkbox" id="crop" checked /><span>Cropland only</span></label>
     </div>
+    <div class="field hidden" id="custom-dates">
+      <label>Window (month and day; same window every year)</label>
+      <div class="inline"><input type="date" id="cs-start" value="2001-05-01" aria-label="Start date" /><input type="date" id="cs-end" value="2001-10-31" aria-label="End date" /></div>
+    </div>
+    <div class="field">
+      <label for="bbox">Custom region (optional)</label>
+      <div class="inline"><input id="bbox" placeholder="west,south,east,north" aria-label="Custom region" /><button type="button" id="bbox-map" class="btn-ghost" title="Fill from the current map view">Map view</button></div>
+    </div>
+    <div class="field">
+      <label for="vegsrc">Vegetation dataset</label>
+      <select id="vegsrc"><option value="s2_ndvi">Sentinel-2 (10 m)</option><option value="modis_ndvi">MODIS (250 m)</option><option value="ls_ndvi">Landsat 8/9 (30 m)</option></select>
+    </div>
+    <div class="field">
+      <label for="alpha">VHI alpha: <b id="alpha-val">0.50</b></label>
+      <input type="range" id="alpha" min="0" max="1" step="0.1" value="0.5" />
+    </div>
     <button id="apply" class="btn-primary">Update</button>
     <div class="spacer"></div>
     <div class="field">
@@ -57,6 +84,8 @@
       <div id="source-chips" class="chips"></div>
     </div>
   </section>
+
+  <div id="season-banner" class="banner hidden" role="status"></div>
 
   <main class="dash">
     <section class="panel map-panel" aria-label="Map">
@@ -134,6 +163,11 @@
       <article class="panel chart-card"><h2 id="donut-title">Drought class share</h2><div class="chart-box"><canvas id="chart-donut"></canvas></div></article>
       <article class="panel chart-card chart-wide"><h2>Districts ranked by mean ADSI (cropland, worst first)</h2><div class="chart-box"><canvas id="chart-rank"></canvas></div></article>
     </section>
+
+    <section class="panel intel hidden" id="intel-panel" aria-label="Analysis panel">
+      <div class="intel-head"><h2 id="intel-title">Analysis</h2><span id="intel-sub" class="intel-sub"></span></div>
+      <div id="intel-body"></div>
+    </section>
   </main>
 
   <footer class="site-footer">
@@ -148,6 +182,28 @@
     <ul id="hub-list" class="hub-list"></ul>
     <p class="hub-note">Normal conditions use 2001 to 2018. Cropland comes from the ESA WorldCover 2021 map. ADSI is a proposed research index (equal-weight VCI, SPI, TCI and SMCI), not an established standard.</p>
     <button class="btn-primary" id="hub-close">Close</button>
+  </dialog>
+
+  <dialog id="method-dialog" class="wide">
+    <h3>Methodology and data quality</h3>
+    <div id="method-body" class="method-body">Loading...</div>
+    <button class="btn-primary" id="method-close">Close</button>
+  </dialog>
+
+  <dialog id="export-dialog" class="wide">
+    <h3>Export</h3>
+    <p class="hub-note" id="export-note"></p>
+    <div class="form-grid">
+      <label>Layer<select id="ex-layer"></select></label>
+      <label>Resolution (m)<input id="ex-scale" type="number" min="10" step="10" placeholder="native" /></label>
+      <label>CRS<input id="ex-crs" value="EPSG:4326" /></label>
+      <label>Drive folder<input id="ex-folder" value="AgroWatch" /></label>
+      <label>File name<input id="ex-desc" placeholder="auto" /></label>
+      <label>Region<select id="ex-region"><option value="filters">Current province / district</option><option value="bbox">Custom region box</option></select></label>
+    </div>
+    <p class="hub-note">Missing pixels are written as -9999, never as zero. Exports below a dataset's native resolution are raised to it.</p>
+    <div class="dlg-actions"><button class="btn-primary" id="ex-image">Export image</button><button class="btn-primary" id="ex-table">Export district table</button><button class="btn-ghost" id="ex-close">Close</button></div>
+    <p id="ex-result" class="hub-note"></p>
   </dialog>
 
   <dialog id="login-dialog">

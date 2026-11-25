@@ -9,9 +9,10 @@ and a district ranking.
 """
 import math
 import os
+import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import ee
 
@@ -23,7 +24,7 @@ PROVINCE_CANDIDATES = ["PROVINCE", "Prov_Name", "PROV", "ADM1_NAME", "NAME_1", "
 DISTRICT_CANDIDATES = ["DISTRICT", "Dist_Name", "DIST", "ADM2_NAME", "NAME_2", "ADM2_EN", "NAME"]
 
 BASE_START, BASE_END = 2001, 2018   # long-term "normal" period
-FIRST_YEAR = 2019                   # first selectable season year
+FIRST_YEAR = 2016                   # first selectable season year (MODIS/CHIRPS baseline starts 2001)
 CLOUD_MAX = 30
 
 # ADSI weights (equal by default; change for sensitivity tests)
@@ -39,10 +40,92 @@ CHIRPS_ID = "UCSB-CHG/CHIRPS/DAILY"
 ERA5_ID = "ECMWF/ERA5_LAND/MONTHLY_AGGR"
 WORLDCOVER_ID = "ESA/WorldCover/v200"
 
+_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _month_day(text, default):
+    """'05-01' -> (5, 1). Falls back to `default` when the text is missing or not a real date."""
+    for t in (text, default):
+        try:
+            m, d = (int(x) for x in str(t).strip().split("-"))
+            datetime(2001, m, d)          # 2001 is not a leap year, so Feb 29 is rejected
+            return m, d
+        except (ValueError, TypeError):
+            continue
+    raise ValueError("bad default date")
+
+
+def _season_def(label, start, end):
+    (m1, d1), (m2, d2) = start, end
+    return {"label": f"{label} ({_MON[m1 - 1]}-{_MON[m2 - 1]})", "m1": m1, "d1": d1, "m2": m2, "d2": d2,
+            "crosses": (m2, d2) < (m1, d1)}
+
+
+# Crop calendars are configurable in .env (KHARIF_START=05-01, KHARIF_END=10-31, RABI_START, RABI_END).
 SEASONS = {
-    "kharif": {"label": "Kharif (May-Oct)", "m1": 5, "m2": 10, "crosses": False},
-    "rabi": {"label": "Rabi (Nov-Apr)", "m1": 11, "m2": 4, "crosses": True},
+    "kharif": _season_def("Kharif", _month_day(os.getenv("KHARIF_START"), "05-01"), _month_day(os.getenv("KHARIF_END"), "10-31")),
+    "rabi": _season_def("Rabi", _month_day(os.getenv("RABI_START"), "11-01"), _month_day(os.getenv("RABI_END"), "04-30")),
 }
+
+# A custom window is written c<MMDD>_<MMDD>, e.g. c0615_0915. The same month-day window is used for
+# every baseline year, so comparisons are always like-for-like.
+_CUSTOM = re.compile(r"^c(\d{2})(\d{2})_(\d{2})(\d{2})$")
+
+
+def season_cfg(season):
+    if season in SEASONS:
+        return SEASONS[season]
+    m = _CUSTOM.match(season or "")
+    if not m:
+        raise ValueError(f"Unknown season '{season}'. Options: {', '.join(SEASONS)} or a custom window")
+    m1, d1, m2, d2 = (int(x) for x in m.groups())
+    try:
+        datetime(2001, m1, d1)
+        datetime(2001, m2, d2)
+    except ValueError:
+        raise ValueError("Custom season has an invalid month-day")
+    return {"label": f"Custom ({d1:02d} {_MON[m1 - 1]} to {d2:02d} {_MON[m2 - 1]})", "m1": m1, "d1": d1,
+            "m2": m2, "d2": d2, "crosses": (m2, d2) < (m1, d1)}
+
+
+def custom_code(m1, d1, m2, d2):
+    return f"c{m1:02d}{d1:02d}_{m2:02d}{d2:02d}"
+
+
+def season_dates(year, season):
+    """(first day, last day) of the season as Python dates, both inclusive."""
+    cfg = season_cfg(season)
+    year = int(year)
+    return date(year, cfg["m1"], cfg["d1"]), date(year + (1 if cfg["crosses"] else 0), cfg["m2"], cfg["d2"])
+
+
+DATA_LAG_DAYS = 16     # newest MODIS / CHIRPS data is about two weeks behind
+
+
+def resolve_season(year, season, today=None):
+    """Return (season_code, info). A season that is still running is cut at today minus the data
+    lag, and the SAME shortened window is used for every baseline year, so partial seasons are never
+    compared with full ones."""
+    today = today or date.today()
+    start, end = season_dates(year, season)
+    if start > today:
+        raise ValueError(f"{season_cfg(season)['label']} {year} has not started yet (it starts {start:%d %b %Y}).")
+    cutoff = today - timedelta(days=DATA_LAG_DAYS)
+    info = {"start": start.isoformat(), "end": end.isoformat(), "partial": False, "label": season_cfg(season)["label"]}
+    if cutoff >= end:
+        return season, info
+    if cutoff < start + timedelta(days=30):
+        raise ValueError("Fewer than 30 days of observations exist for this season so far. "
+                         "Pick an earlier year or wait for more data.")
+    cfg = season_cfg(season)
+    info.update(partial=True, end=cutoff.isoformat(), full_end=end.isoformat())
+    return custom_code(cfg["m1"], cfg["d1"], cutoff.month, cutoff.day), info
+
+
+def is_monsoon(season):
+    cfg = season_cfg(season)
+    return 4 <= cfg["m1"] <= 7
+
 
 _COLORS = ["#1a9850", "#fee08b", "#fdae61", "#d73027", "#7f0000"]
 
@@ -104,7 +187,7 @@ def layer_meta():
 
 
 def _vis(layer, season):
-    rain_max = 600 if season == "kharif" else 200
+    rain_max = 600 if is_monsoon(season) else 200
     return {
         "stress": {"min": 1, "max": 5, "palette": _COLORS},
         "vci_stress": {"min": 1, "max": 5, "palette": _COLORS},
@@ -188,7 +271,25 @@ def _base_fc(province):
     return fc
 
 
+def parse_bbox(text):
+    """'bbox:west,south,east,north' -> [w, s, e, n] after sanity checks, else None."""
+    if not text or not str(text).startswith("bbox:"):
+        return None
+    try:
+        w, s_, e, n = (float(x) for x in str(text)[5:].split(","))
+    except ValueError:
+        raise ValueError("Custom region must be four numbers: west,south,east,north")
+    if not (60.0 <= w < e <= 78.5 and 23.0 <= s_ < n <= 37.5):
+        raise ValueError("Custom region must lie inside Pakistan (lon 60 to 78.5, lat 23 to 37.5) and west < east, south < north")
+    if (e - w) * (n - s_) > 90:
+        raise ValueError("Custom region is too large (limit about 90 square degrees). Pick a province instead.")
+    return [w, s_, e, n]
+
+
 def _region_fc(province, district):
+    box = parse_bbox(district)
+    if box:
+        return ee.FeatureCollection([ee.Feature(ee.Geometry.Rectangle(box), {fields()["district"]: "Custom region"})])
     fc = _base_fc(province)
     if district:
         fc = fc.filter(ee.Filter.eq(fields()["district"], district))
@@ -220,27 +321,50 @@ def get_boundary(province, district):
 
 
 # ------------------------------------------------------------ imagery helpers
-def _crop_mask():
+DW_ID = "GOOGLE/DYNAMICWORLD/V1"
+# Cropland mask is configurable: worldcover (default) | dynamicworld | intersect | union.
+# Neither product is perfect, so check /api/intel/crop_agreement before trusting a district figure.
+CROP_SOURCE = os.getenv("CROP_SOURCE", "worldcover").lower()
+DW_CROP_START = os.getenv("DW_CROP_START", "2021-01-01")
+DW_CROP_END = os.getenv("DW_CROP_END", "2024-01-01")
+DW_CROP_THRESHOLD = float(os.getenv("DW_CROP_THRESHOLD", "0.5"))
+
+
+def _worldcover_crop():
     return ee.Image(ee.ImageCollection(WORLDCOVER_ID).first()).select("Map").eq(40).selfMask()
 
 
+def _dw_crop():
+    """Dynamic World: mean 'crops' probability over a multi-year window, kept where >= threshold."""
+    col = ee.ImageCollection(DW_ID).filterDate(DW_CROP_START, DW_CROP_END).select("crops")
+    return col.mean().gte(DW_CROP_THRESHOLD).selfMask()
+
+
+def _crop_mask(source=None):
+    source = (source or CROP_SOURCE).lower()
+    if source == "dynamicworld":
+        return _dw_crop()
+    if source == "intersect":
+        return _worldcover_crop().And(_dw_crop()).selfMask()
+    if source == "union":
+        return _worldcover_crop().unmask(0).Or(_dw_crop().unmask(0)).selfMask()
+    return _worldcover_crop()
+
+
 def season_range(year, season):
-    """Rabi 2025 = 1 Nov 2025 -> 30 Apr 2026."""
-    cfg = SEASONS[season]
+    """Rabi 2025 = 1 Nov 2025 -> 30 Apr 2026 (end date is exclusive, so +1 day)."""
+    cfg = season_cfg(season)
     y = ee.Number(year)
     end_year = y.add(1) if cfg["crosses"] else y
-    return ee.Date.fromYMD(y, cfg["m1"], 1), ee.Date.fromYMD(end_year, cfg["m2"], 1).advance(1, "month")
+    start = ee.Date.fromYMD(y, cfg["m1"], cfg["d1"])
+    end = ee.Date.fromYMD(end_year, cfg["m2"], cfg["d2"]).advance(1, "day")
+    return start, end
 
 
 def season_is_complete(year, season):
     """False while the season is still running (results would be partial)."""
-    cfg = SEASONS[season]
-    end_year = int(year) + (1 if cfg["crosses"] else 0)
-    end_month = cfg["m2"] + 1
-    if end_month == 13:
-        end_year, end_month = end_year + 1, 1
-    end = datetime(end_year, end_month, 1, tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) >= end
+    _, last = season_dates(year, season)
+    return datetime.now(timezone.utc).date() > last
 
 
 def _mask_index_s2(img):

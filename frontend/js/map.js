@@ -57,16 +57,31 @@ export function fitHome() {
   if (boundaryLayer) map.fitBounds(boundaryLayer.getBounds(), { padding: [24, 24] });
 }
 
+const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+export function getViewBounds() {
+  const b = map.getBounds();
+  return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((x) => Math.round(x * 100) / 100);
+}
+
+// Legend + layer facts: title, units, class or gradient legend, period, dataset, resolution, no-data.
 export function renderLegend(el, info) {
   if (!info) { el.innerHTML = ""; return; }
-  const title = `<div class="legend-title">${info.title}</div>`;
+  const u = info.unit ? ` (${esc(info.unit)})` : "";
+  const title = `<div class="legend-title">${esc(info.title)}${info.kind === "classes" ? "" : u}</div>`;
+  let body;
   if (info.kind === "classes") {
-    el.innerHTML = title + info.classes.map((c) =>
-      `<div class="legend-row"><i style="background:${c.color}"></i>${c.name}<span>${c.range}</span></div>`).join("");
+    body = info.classes.map((c) =>
+      `<div class="legend-row"><i style="background:${esc(c.color)}"></i>${esc(c.name)}<span>${esc(c.range)}</span></div>`).join("");
   } else {
     const { min, max, palette } = info.vis;
-    const u = info.unit ? ` ${info.unit}` : "";
-    el.innerHTML = `${title}<div class="legend-bar" style="background:linear-gradient(90deg,${palette.join(",")})"></div>` +
-      `<div class="legend-scale"><span>${min}${u}</span><span>${max}${u}</span></div>`;
+    body = `<div class="legend-bar" style="background:linear-gradient(90deg,${palette.map(esc).join(",")})"></div>` +
+      `<div class="legend-scale"><span>${esc(min)}</span><span>${esc(max)}</span></div>`;
   }
+  const i = info.info;
+  const facts = i ? `<details class="legend-info"><summary>${esc(i.category)} | ${esc(info.period || "")}</summary>
+      <dl><dt>Dataset</dt><dd>${esc(i.dataset)}</dd><dt>Resolution</dt><dd>${esc(i.resolution)}</dd>
+      <dt>Period</dt><dd>${esc(info.period)}${i.temporal ? " (" + esc(i.temporal) + ")" : ""}</dd>
+      <dt>No data</dt><dd>${esc(i.nodata)}</dd></dl></details>` : "";
+  el.innerHTML = title + body + facts;
 }

@@ -12,12 +12,14 @@ from dotenv import load_dotenv
 
 load_dotenv()  # must run before importing modules that read env vars
 
-from flask import Flask, jsonify, request, send_from_directory  # noqa: E402
+from flask import Flask, g, jsonify, request, send_from_directory  # noqa: E402
 from flask_cors import CORS  # noqa: E402
 from werkzeug.exceptions import HTTPException  # noqa: E402
 
 import authentication as auth  # noqa: E402
+import gee_intel as intel  # noqa: E402
 import gee_processor as gee  # noqa: E402
+import methodology  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("agrowatch")
@@ -32,31 +34,68 @@ auth.check_auth_config()
 auth.init_earth_engine()
 
 
-def _args():
-    """Validate the shared filters: province, district, year, season, crop."""
+def _args(src=None):
+    """Validate the shared filters: province, district (or a custom bbox), year, season, crop.
+
+    `season` may be kharif, rabi or a custom window c<MMDD>_<MMDD>. A season that is still running is
+    shortened to the data that exist (see gee.resolve_season) and `g.season_info` describes that."""
+    src = request.args if src is None else src
     today = date.today()
-    season = (request.args.get("season") or "kharif").lower()
-    if season not in gee.SEASONS:
-        raise ValueError(f"Unknown season '{season}'. Options: {', '.join(gee.SEASONS)}")
+    raw_season = str(src.get("season") or "kharif").lower()
+    gee.season_cfg(raw_season)                       # raises ValueError for an unknown or invalid season
     try:
-        year = int(request.args.get("year", today.year - 1))
-    except ValueError:
+        year = int(src.get("year", today.year - 1))
+    except (TypeError, ValueError):
         raise ValueError("'year' must be a number like 2025")
     if not gee.FIRST_YEAR <= year <= today.year:
         raise ValueError(f"'year' must be between {gee.FIRST_YEAR} and {today.year}")
 
     provinces = gee.list_provinces()
-    province = request.args.get("province") or None
+    province = src.get("province") or None
     if not provinces:
         province = None
     elif province and province not in provinces:
         raise ValueError(f"Unknown province '{province}'")
 
-    district = request.args.get("district") or None
-    if district and district not in gee.list_districts(province):
+    district = src.get("district") or None
+    if district and not gee.parse_bbox(district) and district not in gee.list_districts(province):
         raise ValueError(f"Unknown district '{district}'")
-    crop = request.args.get("crop", "1") != "0"
+    crop = str(src.get("crop", "1")) != "0"
+    season, info = gee.resolve_season(year, raw_season)
+    g.season_info = info
     return province, district, year, season, crop
+
+
+def _asi_opts(src=None):
+    src = request.args if src is None else src
+    return intel.parse_asi_opts(src.get("w"), str(src.get("pca", "0")) == "1")
+
+
+def _alpha(src=None):
+    src = request.args if src is None else src
+    try:
+        a = float(src.get("alpha", 0.5))
+    except (TypeError, ValueError):
+        raise ValueError("'alpha' must be a number between 0 and 1")
+    if not 0 <= a <= 1:
+        raise ValueError("'alpha' must be between 0 and 1")
+    return round(a, 3)
+
+
+def _with_info(payload):
+    """Attach the season window and partial-season flag to a response."""
+    info = getattr(g, "season_info", None)
+    return {**payload, "season_info": info} if info else payload
+
+
+def _stats(province, district, year, season):
+    """Cached stats, with the completeness flag taken from the requested season, not the shortened window."""
+    st = dict(gee.get_stats(province, district, year, season))
+    st["complete"] = not g.season_info["partial"]
+    return st
+
+
+EXPORTS_ENABLED = os.getenv("EXPORTS_ENABLED", "false").lower() == "true"
 
 
 # ------------------------------------------------------------------- routes
@@ -84,6 +123,7 @@ def login():
 @auth.token_required
 def meta():
     today = date.today()
+    layers, groups = intel.layer_meta()
     return jsonify(
         provinces=gee.list_provinces(),
         default_province=os.getenv("DEFAULT_PROVINCE", "Punjab"),
@@ -91,7 +131,11 @@ def meta():
         default_year=today.year - 1,
         seasons=[{"id": k, "label": v["label"]} for k, v in gee.SEASONS.items()],
         base=[gee.BASE_START, gee.BASE_END],
-        **gee.layer_meta(),
+        layers=layers, layer_groups=groups,
+        classes=gee.CLASSES, vci_classes=gee.VCI_CLASSES, asi_classes=intel.ASI_CLASSES,
+        asi={"keys": intel.ASI_KEYS, "names": intel.ASI_NAMES, "weights": intel.ASI_WEIGHTS, "breaks": intel.ASI_BREAKS},
+        crop_source=gee.CROP_SOURCE, exports_enabled=EXPORTS_ENABLED,
+        analysis_date=date.today().isoformat(),
     )
 
 
@@ -115,17 +159,24 @@ def boundary():
 @auth.token_required
 def tiles():
     layer = request.args.get("layer", "stress")
-    if layer not in gee.LAYERS:
-        raise ValueError(f"Unknown layer '{layer}'. Options: {', '.join(gee.LAYERS)}")
+    if layer not in intel.LAYERS and layer not in gee.LAYERS:
+        raise ValueError(f"Unknown layer '{layer}'")
     province, district, year, season, crop = _args()
-    return jsonify(gee.get_tiles(layer, province, district, year, season, crop))
+    if layer in intel.LAYERS:
+        out = intel.get_tiles(layer, province, district, year, season, crop, _asi_opts(), _alpha(), None)
+    else:
+        out = dict(gee.get_tiles(layer, province, district, year, season, crop))
+        meta, _ = intel.layer_meta()
+        out["info"] = {k: meta[layer][k] for k in ("dataset", "resolution", "temporal", "nodata", "category")}
+        out["period"] = intel.layer_period(layer, year, season)
+    return jsonify(_with_info(out))
 
 
 @app.get("/api/stats")
 @auth.token_required
 def stats():
     province, district, year, season, _ = _args()
-    return jsonify(gee.get_stats(province, district, year, season))
+    return jsonify(_with_info(_stats(province, district, year, season)))
 
 
 @app.get("/api/series")
@@ -154,16 +205,139 @@ def ranking():
 @auth.token_required
 def insights():
     province, district, year, season, _ = _args()
-    return jsonify(gee.build_insights(
-        gee.get_stats(province, district, year, season),
+    return jsonify(_with_info(gee.build_insights(
+        _stats(province, district, year, season),
         gee.get_series(province, district, year, season),
-    ))
+    )))
 
 
 @app.get("/api/sources")
 @auth.token_required
 def sources():
     return jsonify(sources=gee.get_sources())
+
+
+# ------------------------------------------------- AgroWatch Intelligence routes
+@app.get("/api/intel/phenology")
+@auth.token_required
+def intel_phenology():
+    province, district, year, season, _ = _args()
+    return jsonify(_with_info({**intel.get_phenology(province, district, year, season),
+                               "curve": intel.get_phenology_curve(province, district, year, season)}))
+
+
+@app.get("/api/intel/rain")
+@auth.token_required
+def intel_rain():
+    province, district, year, season, _ = _args()
+    return jsonify(_with_info(intel.get_rain_intel(province, district, year, season)))
+
+
+@app.get("/api/intel/soil")
+@auth.token_required
+def intel_soil():
+    province, district, year, season, _ = _args()
+    return jsonify(_with_info(intel.get_soil(province, district, year, season)))
+
+
+@app.get("/api/intel/et")
+@auth.token_required
+def intel_et():
+    province, district, year, season, _ = _args()
+    return jsonify(_with_info(intel.get_et(province, district, year, season)))
+
+
+@app.get("/api/intel/asi")
+@auth.token_required
+def intel_asi():
+    province, district, year, season, _ = _args()
+    out = dict(intel.get_asi(province, district, year, season, _asi_opts()))
+    out["complete"] = not g.season_info["partial"]
+    return jsonify(_with_info(out))
+
+
+@app.get("/api/intel/asi_series")
+@auth.token_required
+def intel_asi_series():
+    province, district, year, season, _ = _args()
+    return jsonify(_with_info(intel.get_asi_series(province, district, year, season, _asi_opts())))
+
+
+@app.get("/api/intel/hotspots")
+@auth.token_required
+def intel_hotspots():
+    province, district, year, season, _ = _args()
+    return jsonify(_with_info(intel.get_hotspots(province, district, year, season, _asi_opts())))
+
+
+@app.get("/api/intel/districts")
+@auth.token_required
+def intel_districts():
+    province, _, year, season, _ = _args()
+    return jsonify(_with_info(intel.get_districts(province, year, season, _asi_opts())))
+
+
+@app.get("/api/intel/condition")
+@auth.token_required
+def intel_condition():
+    province, district, year, season, _ = _args()
+    return jsonify(_with_info(intel.get_condition_series(province, district, year, season, _alpha())))
+
+
+@app.get("/api/intel/trend")
+@auth.token_required
+def intel_trend():
+    province, district, year, season, _ = _args()
+    series = gee.get_series(province, district, year, season)
+    return jsonify(_with_info({
+        "trend": intel.trend_from_series(series["rows"]), "years": [series["rows"][0]["year"], series["rows"][-1]["year"]],
+        "note": "Mann-Kendall assumes independent seasons; serial correlation can overstate significance. "
+                "At least 8 valid seasons are required."}))
+
+
+@app.get("/api/intel/crop_agreement")
+@auth.token_required
+def intel_crop_agreement():
+    province, district, *_ = _args()
+    return jsonify(intel.get_crop_agreement(province, district))
+
+
+@app.get("/api/intel/classify")
+@auth.token_required
+def intel_classify():
+    province, district, year, season, crop = _args()
+    samples = request.args.get("samples")
+    if not samples:
+        return jsonify(enabled=False, **intel.classification_enabled())
+    label = request.args.get("label_field", "class")
+    if not label.replace("_", "").isalnum():
+        raise ValueError("label_field must be a plain column name")
+    return jsonify(_with_info(intel.run_classification(
+        province, district, year, season, samples, label, request.args.get("val_samples") or None, crop)))
+
+
+@app.get("/api/methodology")
+def methodology_doc():
+    return jsonify(categories=methodology.CATEGORIES, principles=methodology.PRINCIPLES,
+                   implementation=methodology.IMPLEMENTATION, indicators=methodology.INDICATORS)
+
+
+@app.post("/api/export")
+@auth.token_required
+def export_task():
+    if not EXPORTS_ENABLED:
+        raise ValueError("Exports are switched off on this server. Set EXPORTS_ENABLED=true in backend/.env.")
+    body = request.get_json(silent=True) or {}
+    province, district, year, season, crop = _args(body)
+    region = body.get("region")
+    if region:
+        box = gee.parse_bbox("bbox:" + ",".join(str(x) for x in region))
+        region = box
+    result = intel.start_export(
+        body.get("kind", "image"), body.get("layer", "asi"), province, district, year, season, crop,
+        _asi_opts(body), _alpha(body), None, scale=body.get("scale"), crs=body.get("crs", "EPSG:4326"),
+        description=body.get("description"), folder=body.get("folder", "AgroWatch"), region=region)
+    return jsonify(_with_info(result))
 
 
 # ------------------------------------------------------------------- errors

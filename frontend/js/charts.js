@@ -5,6 +5,9 @@ const C = { text: "#9db2d3", grid: "rgba(120,150,200,.13)", blue: "#2f8cff", gre
 export const RISK_COLOR = { Low: C.green, Moderate: C.amber, High: C.orange, Severe: C.red };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+export { C };
+export function drawChart(id, config) { make(id, config); }
+
 export function initCharts() {
   Chart.defaults.color = C.text;
   Chart.defaults.font.family = "'Manrope', system-ui, sans-serif";

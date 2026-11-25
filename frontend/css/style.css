@@ -199,3 +199,81 @@ dialog input { background: #0a1730; border: 1px solid var(--edge); border-radius
 .site-footer p { margin: 0; }
 .site-footer b { color: var(--text); font-weight: 700; }
 @media (max-width: 720px) { .site-footer { margin: 0 10px; } }
+/* ---- AgroWatch Intelligence additions ---- */
+.topbar { flex-wrap: wrap; row-gap: 8px; }
+.nav { display: flex; flex-wrap: wrap; gap: 6px; }
+.nav-btn { padding: 7px 11px; font-size: 13px; }
+.nav-btn.ghost { background: transparent; }
+.region-line { font-size: 12px; color: var(--cyan); margin-top: 2px; }
+.brand-sub { max-width: 420px; }
+.inline { display: flex; gap: 6px; align-items: center; }
+.inline input[type="date"], .inline input:not([type]) { background: #0a1730; border: 1px solid var(--edge); border-radius: 8px; padding: 7px 8px; color: var(--text); min-width: 0; }
+#bbox { width: 190px; }
+.btn-ghost { background: transparent; border: 1px solid var(--edge); color: var(--text); border-radius: 8px; padding: 8px 12px; font-weight: 600; cursor: pointer; }
+.btn-ghost:hover { border-color: var(--blue); }
+#alpha { width: 120px; }
+.banner { margin: 8px 18px 0; padding: 9px 14px; border: 1px solid #7a5a12; background: rgba(245, 158, 11, .12); color: #fcd9a0; border-radius: 8px; font-size: 13px; }
+
+.intel { grid-column: 1 / -1; }
+.intel-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+.intel-head h2 { margin: 0; }
+.intel-sub { color: var(--muted); font-size: 12px; }
+.tile-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 8px 0 12px; }
+.tile { background: rgba(10, 23, 48, .8); border: 1px solid var(--edge-soft); border-left: 3px solid var(--edge); border-radius: 8px; padding: 9px 12px; display: flex; flex-direction: column; gap: 2px; }
+.tile[data-tone="good"] { border-left-color: var(--green); }
+.tile[data-tone="watch"] { border-left-color: var(--amber); }
+.tile[data-tone="bad"] { border-left-color: var(--red); }
+.tile-label { font-size: 12px; color: var(--muted); }
+.tile-val { font-size: 20px; }
+.tile-sub { font-size: 12px; color: var(--muted); }
+.intel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; margin-bottom: 10px; }
+.chart-card.mini { background: rgba(10, 23, 48, .6); border: 1px solid var(--edge-soft); border-radius: 8px; padding: 10px; }
+.chart-card.mini h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.chart-card.mini .chart-box { height: 240px; position: relative; }
+.sub-h { margin: 14px 0 6px; font-size: 14px; }
+.panel-note { margin: 8px 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.panel-note.warn { border-left: 3px solid var(--amber); padding-left: 10px; color: #d6c39b; }
+.tbl-wrap { overflow-x: auto; max-height: 460px; overflow-y: auto; border: 1px solid var(--edge-soft); border-radius: 8px; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { position: sticky; top: 0; background: #0c1b38; text-align: left; padding: 7px 10px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.tbl th.sortable { cursor: pointer; }
+.tbl th.sortable:hover { color: var(--text); }
+.tbl td { padding: 6px 10px; border-top: 1px solid var(--edge-soft); }
+.tbl tbody tr:hover { background: rgba(47, 140, 255, .1); cursor: default; }
+.tbl-actions { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+.asi-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 6px 0 10px; }
+.asi-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.asi-form input:not([type="checkbox"]) { background: #0a1730; border: 1px solid var(--edge); border-radius: 8px; padding: 7px 9px; color: var(--text); width: 150px; }
+.asi-form label.inline-check { flex-direction: row; align-items: center; gap: 6px; }
+
+.legend-info { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend-info summary { cursor: pointer; }
+.legend-info dl { margin: 6px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; }
+.legend-info dt { color: var(--text); }
+.legend-info dd { margin: 0; }
+.legend { max-width: 340px; max-height: 60%; overflow-y: auto; }
+
+dialog.wide { width: min(900px, 94vw); max-height: 88vh; overflow-y: auto; }
+.method-body h4 { margin: 14px 0 6px; color: var(--cyan); }
+.method-body dl { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; font-size: 13px; margin: 6px 0; }
+.method-body dt { color: var(--muted); }
+.method-body dd { margin: 0; }
+.method-body details { border: 1px solid var(--edge-soft); border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+.method-body summary { cursor: pointer; font-weight: 700; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 10px 0; }
+.form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.form-grid select, .form-grid input { background: #0a1730; border: 1px solid var(--edge); border-radius: 8px; padding: 8px; color: var(--text); width: 100%; }
+.dlg-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+@media (max-width: 720px) { .method-body dl { grid-template-columns: 1fr; } #bbox { width: 140px; } }
+
+/* recommendations */
+.rec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin: 8px 0 12px; }
+.rec-col h3 { margin: 0; font-size: 16px; }
+.rec-sub { margin: 2px 0 10px; font-size: 12.5px; color: var(--muted); }
+.rec { background: rgba(10, 23, 48, .8); border: 1px solid var(--edge-soft); border-left: 3px solid var(--edge); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; line-height: 1.45; }
+.rec[data-tone="good"] { border-left-color: var(--green); }
+.rec[data-tone="watch"] { border-left-color: var(--amber); }
+.rec[data-tone="bad"] { border-left-color: var(--red); }
+.rec b { font-size: 14px; }
+.rec p { margin: 4px 0; font-size: 14px; color: var(--muted); }
+.rec-why { font-size: 12px; color: var(--muted); opacity: .85; }
