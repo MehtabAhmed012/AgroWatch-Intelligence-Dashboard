@@ -15,9 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare site from the frontend folder
+        run: |
+          # Find the folder holding the dashboard's index.html (usually ./frontend), ignoring the repo root.
+          SRC=$(find . -mindepth 2 -maxdepth 2 -iname index.html -not -path './.git/*' -not -path './node_modules/*' | head -n1 | xargs -r dirname)
+          if [ -z "$SRC" ]; then echo "No frontend/index.html found. Repo layout:"; ls -la; exit 1; fi
+          echo "Publishing folder: $SRC"
+          mkdir _site
+          cp -r "$SRC"/. _site/
+          touch _site/.nojekyll
+          ls -la _site
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: frontend
+          path: _site
   deploy:
     needs: build
     runs-on: ubuntu-latest
