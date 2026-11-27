@@ -33,7 +33,11 @@ def init_earth_engine():
         creds = ee.ServiceAccountCredentials(account, key_file)
         ee.Initialize(credentials=creds, project=project)
     else:
-        # Uses the credentials saved by `earthengine authenticate`
+        if os.getenv("VERCEL") or os.getenv("RENDER") or os.getenv("K_SERVICE"):
+            missing = [n for n, v in (("GEE_SERVICE_ACCOUNT", account), ("GEE_PRIVATE_KEY_JSON", key_json)) if not v]
+            raise RuntimeError("Earth Engine service account not configured on this host. Missing or empty environment "
+                               f"variable(s): {', '.join(missing)}. Set them for the Production environment and redeploy.")
+        # Local development: uses the credentials saved by `earthengine authenticate`
         ee.Initialize(project=project)
 
 
